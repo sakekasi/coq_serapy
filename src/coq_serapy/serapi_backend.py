@@ -6,6 +6,7 @@ import queue
 import signal
 import functools
 from typing import Optional, List, Any, TYPE_CHECKING, cast
+import typing as t
 
 from sexpdata import Symbol, loads, dumps, ExpectClosingBracket
 from pampy import match, _, TAIL
@@ -43,6 +44,23 @@ class CoqSeraPyInstance(CoqBackend, threading.Thread):
             self.all_goals_regex = all_goals_regex_10
         else:
             self.all_goals_regex = all_goals_regex_13
+
+        if self.coq_minor_version() >= 16:
+            # the "Add LoadPath" command is deprecated in Coq 16, so we need to use flags
+            includes = get_includes(root_dir or ".", 0)
+            for kind, path, alias in includes:
+                if kind == "Q":
+                    coq_command.append("-Q")
+                    if alias is None:
+                        coq_command.append(f"{path}")
+                    else:
+                        coq_command.append(f"{path},{alias}")
+                elif kind == "R":
+                    coq_command.append("-R")
+                    coq_command.append(f"{path},{alias}")
+                elif kind == "I":
+                    coq_command.append("-I")
+                    coq_command.append(f"{path}")
 
         # Open a process to coq, with streams for communicating with
         # it.
@@ -205,42 +223,24 @@ class CoqSeraPyInstance(CoqBackend, threading.Thread):
         self._proc.send_signal(signal.SIGINT)
         self._flush_queue()
     def enterDirectory(self, root_dir: str) -> None:
-        try:
-            with open(root_dir + "/_CoqProject", 'r') as includesfile:
-                includes_string = includesfile.read()
-        except FileNotFoundError:
-            try:
-                with open(root_dir + "/Make", 'r') as includesfile:
-                    includes_string = includesfile.read()
-            except FileNotFoundError:
-                eprint(f"Didn't find _CoqProject or Make for {root_dir}",
-                       guard=self.verbosity)
-                includes_string = ""
+        if self.coq_minor_version() >= 16:
+            # using flags to manage loadpath
+            return
 
-        q_pattern = r"-Q\s*(\S+)\s+(\S+)\s*"
-        r_pattern = r"-R\s*(\S+)\s+(\S+)\s*"
-        i_pattern = r"-I\s*(\S+)\s*"
-        for includematch in re.finditer(rf"({q_pattern})|({r_pattern})|({i_pattern})",
-                                        includes_string):
-            q_match = re.fullmatch(r"-Q\s*(\S*)\s*(\S*)\s*", includematch.group(0))
-            if q_match:
-                if q_match.group(2) == "\"\"":
-                    self.addStmt(
-                        f"Add LoadPath \"{q_match.group(1)}\".")
+        includes = get_includes(root_dir, self.verbosity)
+        print(includes)
+        for kind, path, alias in includes:
+            if kind == "Q":
+                if alias is None:
+                    self.addStmt(f"Add LoadPath \"{path}\".")
                 else:
-                    self.addStmt(
-                        f"Add LoadPath \"{q_match.group(1)}\" as {q_match.group(2)}.")
-                continue
-            r_match = re.match(r"-R\s*(\S*)\s*(\S*)\s*", includematch.group(0))
-            if r_match:
-                self.addStmt(
-                    f"Add Rec LoadPath \"{r_match.group(1)}\" as {r_match.group(2)}.")
-                continue
-            i_match = re.match(r"-I\s*(\S*)", includematch.group(0))
-            if i_match:
-                self.addStmt(
-                    f"Add ML Path \"{i_match.group(1)}\".")
-                continue
+                    self.addStmt(f"Add LoadPath \"{path}\" as {alias}.")
+            elif kind == "R":
+                self.addStmt(f"Add Rec LoadPath \"{path}\" as {alias}.")
+            elif kind == "I":
+                self.addStmt(f"Add ML Path \"{path}\".")
+
+
     def setFilename(self, filename: str) -> None:
         module_name = get_module_from_filename(filename)
         self.addStmt(f"Module {module_name}.")
@@ -817,6 +817,47 @@ def searchStrsInMsg(sexp, fuel: int = 30) -> List[str]:
                                 for sublst in sexp]
                 for substr in substrs]
     return []
+
+def get_includes(root_dir: str, verbosity: int = 0) -> t.List[t.Tuple[t.Literal["Q", "R", "I"], str, t.Optional[str]]]:
+    try:
+        with open(root_dir + "/_CoqProject", 'r') as includesfile:
+            includes_string = includesfile.read()
+    except FileNotFoundError:
+        try:
+            with open(root_dir + "/Make", 'r') as includesfile:
+                includes_string = includesfile.read()
+        except FileNotFoundError:
+            eprint(f"Didn't find _CoqProject or Make for {root_dir}",
+                    guard=verbosity)
+            includes_string = ""
+
+    matches: t.List[t.Tuple[t.Literal["Q", "R", "I"], str, t.Optional[str]]] = []
+
+    q_pattern = r"-Q\s*(\S+)\s+(\S+)\s*"
+    r_pattern = r"-R\s*(\S+)\s+(\S+)\s*"
+    i_pattern = r"-I\s*(\S+)\s*"
+
+    for includematch in re.finditer(rf"({q_pattern})|({r_pattern})|({i_pattern})",
+                                    includes_string):
+        q_match = re.fullmatch(r"-Q\s*(\S*)\s*(\S*)\s*", includematch.group(0))
+        if q_match:
+            if q_match.group(2) == "\"\"":
+                matches.append(("Q", q_match.group(1), None))
+            else:
+                matches.append(("Q", q_match.group(1), q_match.group(2)))
+            continue
+            
+        r_match = re.match(r"-R\s*(\S*)\s*(\S*)\s*", includematch.group(0))
+        if r_match:
+            matches.append(("R", r_match.group(1), r_match.group(2)))
+            continue
+
+        i_match = re.match(r"-I\s*(\S*)", includematch.group(0))
+        if i_match:
+            matches.append(("I", i_match.group(1), None))
+            continue
+    
+    return matches
 
 
 goal_regex = re.compile(r"\(\(info\s*\(\(evar\s*\(Ser_Evar\s*(\d+)\)\)"
