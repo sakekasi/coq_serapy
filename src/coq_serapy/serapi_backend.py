@@ -131,6 +131,7 @@ class CoqSeraPyInstance(CoqBackend, threading.Thread):
             self.timeout = timeout
         try:
             self._flush_queue()
+            self.feedbacks = []
             assert self.message_queue.empty(), self.messages
             stmt = stmt.replace("\\", "\\\\")
             stmt = stmt.replace("\"", "\\\"")
@@ -149,7 +150,7 @@ class CoqSeraPyInstance(CoqBackend, threading.Thread):
             # Execute the statement.
             self._send_acked(f"(Exec {self.cur_state})\n")
             # Finally, get the result of the command
-            self.feedbacks = self._get_feedbacks()
+            self.feedbacks += self._get_feedbacks()
             # Get a new proof context, if it exists
             if is_goal_open:
                 self._get_enter_goal_context()
@@ -298,7 +299,7 @@ class CoqSeraPyInstance(CoqBackend, threading.Thread):
             return []
     def _isFeedbackMessage(self, msg: str) -> bool:
         # if self.coq_minor_version() > 12:
-        return isFeedbackMessage(msg) or isFeedbackWarningMessage(msg) or isFeedbackMessageOld(msg)
+        return isFeedbackMessage(msg) or isFeedbackWarningMessage(msg) or isFeedbackMessageOld(msg) or isFeedbackInfoMessage(msg)
         # return isFeedbackMessageOld(msg)
     def _flush_queue(self) -> None:
         while not self.message_queue.empty():
@@ -416,6 +417,8 @@ class CoqSeraPyInstance(CoqBackend, threading.Thread):
                     ["Feedback", TAIL], lambda tail: True,
                     ["Answer", int, "Completed"], lambda sidx: True,
                     _, lambda x: False):
+            if self._isFeedbackMessage(msg):
+                self.feedbacks.append(msg)
             msg = self._get_message()
 
         return match(normalizeMessage(msg),
@@ -767,8 +770,11 @@ def isFeedbackMessage(msg: 'Sexp') -> bool:
                  ["Feedback", [["doc_id", int], ["span_id", int],
                                ["route", int],
                                ["contents", ["Message", ["level", "Notice"],
-                                             ["loc", []], TAIL]]]],
-                 lambda *args: True,
+                                             ["loc", []], TAIL]]]], lambda *args: True,
+                ["Feedback", [["doc_id", int], ["span_id", int],
+                               ["route", int],
+                               ["contents", ["Message", ["level", "Info"],
+                                             ["loc", []], TAIL]]]], lambda *args: True,                       
                  _, lambda *args: False)
 
 def isFeedbackWarningMessage(msg: 'Sexp') -> bool:
@@ -778,6 +784,14 @@ def isFeedbackWarningMessage(msg: 'Sexp') -> bool:
                                ["contents", ["Message", ["level", "Warning"],
                                              ["loc", []], TAIL]]]],
                  lambda *args: True,
+                 _, lambda *args: False)
+
+def isFeedbackInfoMessage(msg: 'Sexp') -> bool:
+    return match(normalizeMessage(msg),
+                 ["Feedback", [["doc_id", int], ["span_id", int],
+                               ["route", int],
+                               ["contents", ["Message", ["level", "Info"],
+                                             ["loc", []], TAIL]]]], lambda *args: True,
                  _, lambda *args: False)
 
 def isProgressMessage(msg: 'Sexp') -> bool:
