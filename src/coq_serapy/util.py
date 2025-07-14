@@ -4,7 +4,8 @@ import hashlib
 import contextlib
 import re
 import sys
-
+import logging
+import io
 from typing import (Optional, Tuple, TypeVar, Union, List, Pattern, Match)
 import subprocess
 import psutil
@@ -64,13 +65,6 @@ def split_by_char_outside_matching(openpat: str, closepat: str,
                 assert nextsplitpos > curpos
                 curpos = nextsplitpos
     return None
-
-
-def eprint(*args, **kwargs):
-    if "guard" not in kwargs or kwargs["guard"]:
-        print(*args, file=sys.stderr,
-              **{i: kwargs[i] for i in kwargs if i != 'guard'})
-        sys.stderr.flush()
 
 
 mybarfmt = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}]'
@@ -150,3 +144,30 @@ def silent():
     yield
     sys.stderr = save_stderr
     sys.stdout = save_stdout
+
+
+def get_logger(tag: Optional[str] = None):
+    logger = logging.getLogger(
+        "prompts-for-proofs" if tag is None else f"prompts-for-proofs.{tag}"
+    )
+    return logger
+
+
+
+LOGGER = get_logger("coq_serapy")
+
+def eprint(*args, **kwargs):
+    if "guard" not in kwargs or kwargs["guard"]:
+        print(*args, file=sys.stderr,
+              **{i: kwargs[i] for i in kwargs if i != 'guard'})
+        sys.stderr.flush()
+
+        str = print_to_string(*args, **{i: kwargs[i] for i in kwargs if i != 'guard'})
+        LOGGER.info(str)
+
+def print_to_string(*args, **kwargs):
+    output = io.StringIO()
+    print(*args, file=output, **kwargs)
+    contents = output.getvalue()
+    output.close()
+    return contents
